@@ -1,28 +1,25 @@
 {
-  "schemaVersion": 3,
-  "payloads": [
-    {
-      "payloadId": "b0q-S908WVLSAGZE3-ksun340-experimental-v1",
-      "displayName": "Galaxy S22 Ultra SM-S908W | GZE3 | EXPERIMENTAL v1",
-      "models": [
-        "SM-S908W"
-      ],
-      "kernelVersions": [
-        "5.10.236-android12-9-31998796-abS908WVLSAGZE3"
-      ],
-      "flavor": "kernelsu-next",
-      "requiresShell": true,
-      "exploit": {
-        "url": "https://raw.githubusercontent.com/BillJones-SectorFlow/s908w-gze3-test/main/artifacts/ionstack-s908w-gze3-rmgnext-experimental.so",
-        "size": 1839144,
-        "sha256": "47fd5a23a39c8eb7369fead9aa74733992430c28fda4defd5960238800d48a5e"
-      },
-      "kernelsu": {
-        "url": "https://raw.githubusercontent.com/BillJones-SectorFlow/s908w-gze3-test/main/artifacts/ksud-s908w-gze3-next",
-        "size": 4317040,
-        "sha256": "e71268461943f3072c3e0647a33adb71e79b663a22f199ce02d4aa11a6b2c4a6",
-        "version": "3.4.0"
-      }
-    }
+  "status": "experimental; not executed or tested on a phone",
+  "device": "SM-S908W",
+  "firmware": "S908WVLSAGZE3",
+  "kernelRelease": "5.10.236-android12-9-31998796-abS908WVLSAGZE3",
+  "sources": {
+    "IonStack-S22U": "https://github.com/sarabpal-dev/IonStack-S22U/tree/f6ee13c355c6af94e4c6c178a1ff886dfb2a53de",
+    "KernelSU-Next": "https://github.com/sarabpal-dev/KernelSU-Next/tree/fed006e620bf699e63fb3c4c3276bc64b2c94bb6",
+    "Root-My-Galaxy-Next-reviewed": "https://github.com/rushiranpise/Root-My-Galaxy-Next/tree/bca6761062a7142b30fb80a081669b9975e9dde3"
+  },
+  "kernelImageSHA256": "94450622f7362e5605e234d2e40b83f685749f27e364bff43451f9b8ccaf69f3",
+  "loaderVersionCode": 33303,
+  "checks": [
+    "AArch64 Android cross-compilation completed",
+    "Exact kernel header regenerated and compared to upstream target",
+    "Upstream module undefined symbols checked against exact kernel kallsyms",
+    "Exported symbol CRC comparison found no mismatches",
+    "Two host module-rewrite tests passed"
+  ],
+  "limitations": [
+    "No end-to-end phone test",
+    "Cross-compilation and symbol checks do not prove runtime exploit or module compatibility",
+    "Next local import replaces only exploit; matching hosted catalog/loader required"
   ]
 }
