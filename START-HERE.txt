@@ -1,0 +1,114 @@
+REPOSITORY PREPARED
+The GitHub setup in steps 1 and 2 is already complete for:
+  https://github.com/BillJones-SectorFlow/s908w-gze3-test
+Use branch main. Begin with phone setup at step 3.
+README.md contains the phone checklist and direct downloads.
+
+SM-S908W / S908WVLSAGZE3 experimental test kit
+
+STATUS
+Compiled and checked on the build machine, not tested on a phone. This is
+an experimental port, not a confirmed working root package. Kernel exploit
+attempts can crash or reboot the phone; back up important files first.
+
+EXACT TARGET
+Model: SM-S908W
+Firmware: S908WVLSAGZE3
+Kernel: 5.10.236-android12-9-31998796-abS908WVLSAGZE3
+Do not use this kit for the S908E from the quoted issue, another firmware,
+or a newer update. The binaries refuse a different kernel release.
+
+WHY A CATALOG IS NEEDED
+Next's Local payload picker accepts the .so, but replaces ONLY the exploit.
+It still resolves a supported profile and downloads that profile's KernelSU
+loader. A ZIP cannot be imported as a payload source. You must host the two
+artifacts and catalog together in your own GitHub repository first.
+
+1. PREPARE THE CATALOG ON A COMPUTER
+Extract this ZIP. Install Python 3 if needed. In the extracted folder run:
+
+  python3 prepare_catalog.py BillJones-SectorFlow
+
+On Windows, use "py -3" instead of "python3" if that is your Python command.
+Replace BillJones-SectorFlow with your real GitHub username.
+The script verifies both artifact hashes and creates upload-to-github/.
+It does not contact GitHub, use ADB, or change your phone.
+
+2. UPLOAD TO GITHUB
+Create a PUBLIC repository named s908w-gze3-test in your GitHub account.
+Use branch main. Upload the artifacts/ and support/ folders INSIDE
+upload-to-github/ to the REPOSITORY ROOT (not upload-to-github itself).
+GitHub's Add file -> Upload files page accepts folders dragged from a computer.
+Commit the upload. Confirm these exact paths are visible in GitHub:
+
+  support/targets-v3.json
+  artifacts/ionstack-s908w-gze3-rmgnext-experimental.so
+  artifacts/ksud-s908w-gze3-next
+
+Do not upload the whole ZIP as the source; Next needs these individual paths.
+The script optionally takes a different repository name as its second argument.
+If you prepare manually, replace BillJones-SectorFlow in BOTH catalog URLs.
+
+3. INSTALL THE MATCHING MANAGER
+Copy manager/KernelSU_Next_v3.4.0-android12-5.10_33303-release.apk to the phone
+and install it using Android's installer. This is sarabpal-dev's release APK,
+unchanged; its signing certificate matches the embedded module.
+Do this BEFORE running Next so it sees an existing manager.
+Do not substitute Next's offered stock manager download: its signing
+certificate differs. If Android reports an incompatible existing package,
+stop and resolve that manager/signature conflict before the rooting test.
+Installing the manager itself does not root the phone.
+
+4. SET UP NEXT
+Use rushiranpise/Root-My-Galaxy-Next, rather than the original app.
+Start Shizuku using its normal wireless-debugging setup and authorize Next.
+In Next, enable its Shizuku transport. This payload requires a shell UID 2000;
+a native app-process run will be refused by the payload.
+Leave automatic rooting on boot and automatic retries disabled for this test.
+Use the normal device payload flow, not the universal exploit flow.
+
+Settings -> Payload Management -> Payload Sources -> Add:
+  Repository: BillJones-SectorFlow/s908w-gze3-test
+  Branch: main
+Enable the source. Its check should find ONE matching SM-S908W GZE3 target.
+If it reports no match, STOP: do not select another phone's target.
+Use the source's lock/pin action to freeze the uploaded commit if available.
+
+5. IMPORT THE .SO
+Copy artifacts/ionstack-s908w-gze3-rmgnext-experimental.so to the phone.
+Settings -> Payload Management -> Local payload -> select that .so.
+Select the target:
+  Galaxy S22 Ultra SM-S908W | GZE3 | EXPERIMENTAL v1
+Its source must be YOUR repository. Choose KernelSU-Next if a flavor picker
+is shown. Use Online mode for the first install so the loader is downloaded
+and verified against the catalog SHA-256. Do not choose Offline initially.
+
+6. RUN ONE TEST
+Run the normal install/root action with KernelSU installation enabled.
+Leave the app's run limits at defaults. This experimental payload itself
+caps the exploit at one attempt and discards old slide offsets.
+Keep the screen on. Do not start a second run concurrently.
+If it fails or times out, save the log and reboot before trying again.
+If it succeeds, open the installed sarabpal-dev KernelSU-Next manager and
+check whether it reports a working driver/root. A success claim in Next
+alone is not an end-to-end verification of the manager.
+Avoid soft restarts, root-on-boot setup, and installing root modules during
+this first test. Export Next's History / Run details log for diagnosis.
+
+BEHAVIOR AND LIMITS
+Root is expected to last only until a full reboot; the boot image is not
+flashed. The loader does write its daemon/assets under /data/adb, so this is
+not a filesystem-free test. Its ephemeral mode skips root-module lifecycle
+scripts. A different existing /data/adb/ksud is refused rather than overwritten.
+Local import remains active until you remove it; remove it before testing
+another target. Latest reviewed Next does not read the old routePolicy or
+requiresFreshP0Session manifest fields, so this catalog does not rely on them.
+
+CONTENTS
+artifacts/: experimental .so and custom ksud embedding the upstream module.
+support/: schema-v3 catalog template with exact model/kernel and artifact hashes.
+manager/: unchanged matching upstream signed manager APK.
+prepare_catalog.py: makes a verified ready-to-upload GitHub folder.
+PROVENANCE.json: upstream revisions, checks and limitations.
+source/: modified source snapshots, patches, licenses and build notes.
+SHA256SUMS: hashes of the packaged files.

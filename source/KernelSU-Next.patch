@@ -1,0 +1,222 @@
+diff --git a/userspace/ksud/build.rs b/userspace/ksud/build.rs
+index c21f33a3..66a2ee75 100644
+--- a/userspace/ksud/build.rs
++++ b/userspace/ksud/build.rs
+@@ -21,6 +21,11 @@ fn get_git_version() -> Result<(u32, String), std::io::Error> {
+         .parse()
+         .map_err(|_| std::io::Error::other("Failed to parse git count"))?;
+     let version_code = 30000 + version_code;
++    // This experimental userspace embeds the upstream 33303 release module.
++    // Use its release code rather than the clone's history length.
++    let version_code = env::var("S908W_RELEASE_VERSION_CODE")
++        .ok().map(|v| v.parse::<u32>().expect("invalid release version code"))
++        .unwrap_or(version_code);
+ 
+     let version_name = String::from_utf8(
+         Command::new("git")
+@@ -217,6 +222,7 @@ fn assemble_bootstrap() {
+ }
+ 
+ fn main() {
++    println!("cargo:rerun-if-env-changed=S908W_RELEASE_VERSION_CODE");
+     assemble_bootstrap();
+ 
+     let (code, name) = match get_git_version() {
+diff --git a/userspace/ksud/src/cli.rs b/userspace/ksud/src/cli.rs
+index 20aa2620..8a7cfbb4 100644
+--- a/userspace/ksud/src/cli.rs
++++ b/userspace/ksud/src/cli.rs
+@@ -44,6 +44,9 @@ enum Commands {
+ 
+     /// Load kernelsu.ko and execute late-load stage scripts
+     LateLoad {
++        /// Load for this boot without running module lifecycle scripts.
++        #[arg(long)]
++        ephemeral: bool,
+         /// Pass allow_shell=1 when loading kernelsu.ko
+         #[arg(long)]
+         allow_shell: bool,
+@@ -661,7 +664,8 @@ pub fn run() -> Result<()> {
+             package_name,
+             kmi,
+             allow_shell,
+-        } => crate::late_load::run(&package_name, kmi, allow_shell),
++            ephemeral,
++        } => crate::late_load::run(&package_name, kmi, allow_shell, ephemeral),
+         Commands::Services => {
+             if ksucalls::get_version() <= 0 {
+                 info!("KernelSU Next not available, exiting services");
+diff --git a/userspace/ksud/src/late_load.rs b/userspace/ksud/src/late_load.rs
+index 150af8b6..3fce1d47 100644
+--- a/userspace/ksud/src/late_load.rs
++++ b/userspace/ksud/src/late_load.rs
+@@ -1,7 +1,6 @@
+ use anyhow::{Context, Result};
+ use log::{info, warn};
+ use rustix::cstr;
+-use std::process::Command;
+ 
+ use crate::module::{handle_updated_modules, prune_modules};
+ use crate::{assets, defs, init_event, metamodule, restorecon, utils};
+@@ -35,10 +34,17 @@ fn dump_process_info(label: &str) {
+     );
+ }
+ 
+-pub fn run(package_name: &String, kmi: Option<String>, allow_shell: bool) -> Result<()> {
+-    utils::daemonize(false)?;
++pub fn run(_package_name: &String, kmi: Option<String>, allow_shell: bool, ephemeral: bool) -> Result<()> {
++    let uname = rustix::system::uname();
++    anyhow::ensure!(
++        uname.release().to_bytes() == b"5.10.236-android12-9-31998796-abS908WVLSAGZE3",
++        "this experimental loader requires S908WVLSAGZE3 exactly"
++    );
+     info!("late-load command triggered!");
+     dump_process_info("late-load start");
++    // Next waits for this process and checks the driver afterward. Stay in
++    // the foreground; daemonizing would hide load/installation failures.
++    utils::stage_s908w_daemon().context("Failed to stage the exact ksud")?;
+ 
+     // 1. Check if KernelSU is already loaded
+     if ksuinit::has_kernelsu() {
+@@ -80,7 +86,14 @@ pub fn run(package_name: &String, kmi: Option<String>, allow_shell: bool) -> Res
+         warn!("clear temp configs failed: {e}");
+     }
+ 
+-    utils::install(None).context("Failed to install ksud")?;
++    utils::finish_s908w_install().context("Failed to finish ksud installation")?;
++
++    if ephemeral {
++        // Root remains boot-local. Keep the daemon/assets needed by su, but
++        // do not execute installed modules or their service scripts in a test.
++        info!("ephemeral S908W load complete; module lifecycle scripts skipped");
++        return Ok(());
++    }
+ 
+     // 5. Handle module updates
+     if let Err(e) = handle_updated_modules() {
+@@ -131,16 +144,5 @@ pub fn run(package_name: &String, kmi: Option<String>, allow_shell: bool) -> Res
+     // 13. Execute boot-completed stage scripts (non-blocking)
+     init_event::run_stage("boot-completed", false);
+ 
+-    // 14. Restart Manager so it gets a fresh ksu fd from the newly loaded kernel module
+-    info!("Restarting KernelSU Next Manager {package_name}...");
+-    let _ = Command::new("am").args(["force-stop", package_name]).status();
+-    let _ = Command::new("am")
+-        .args([
+-            "start",
+-            "-n",
+-            &format!("{package_name}/com.rifsxd.ksunext.ui.MainActivity"),
+-        ])
+-        .status();
+-
+     Ok(())
+ }
+diff --git a/userspace/ksud/src/utils.rs b/userspace/ksud/src/utils.rs
+index 1eba4294..c70d865e 100644
+--- a/userspace/ksud/src/utils.rs
++++ b/userspace/ksud/src/utils.rs
+@@ -235,6 +235,36 @@ fn link_ksud_to_bin() -> Result<()> {
+     Ok(())
+ }
+ 
++/// Stage Next's copy before the module changes the loader's security domain.
++/// Refuse to replace another installation during this experimental test.
++pub fn stage_s908w_daemon() -> Result<()> {
++    ensure_dir_exists(defs::ADB_DIR)?;
++    set_permissions(defs::ADB_DIR, Permissions::from_mode(0o700))?;
++    let expected = std::fs::read("/proc/self/exe")?;
++    let staged = std::fs::read("/data/local/tmp/.ksud-stage")
++        .context("Next's staged ksud is missing")?;
++    anyhow::ensure!(expected == staged, "Next's staged ksud differs from this loader");
++    if Path::new(defs::DAEMON_PATH).exists() {
++        anyhow::ensure!(
++            std::fs::read(defs::DAEMON_PATH)? == expected,
++            "another /data/adb/ksud exists; refusing to overwrite it"
++        );
++        return Ok(());
++    }
++    let temporary = Path::new(defs::ADB_DIR).join(".ksud-s908w-stage");
++    std::fs::write(&temporary, &expected)?;
++    set_permissions(&temporary, Permissions::from_mode(0o755))?;
++    std::fs::rename(&temporary, defs::DAEMON_PATH)?;
++    Ok(())
++}
++
++pub fn finish_s908w_install() -> Result<()> {
++    restorecon::lsetfilecon(defs::DAEMON_PATH, restorecon::KSU_CON)?;
++    assets::ensure_binaries(false).with_context(|| "Failed to extract assets")?;
++    link_ksud_to_bin()?;
++    Ok(())
++}
++
+ pub fn install(libadbroot: Option<PathBuf>) -> Result<()> {
+     ensure_dir_exists(defs::ADB_DIR)?;
+     let _ = std::fs::remove_file(defs::DAEMON_PATH);
+diff --git a/userspace/ksuinit/src/lib.rs b/userspace/ksuinit/src/lib.rs
+index 1a62d4c2..5bf3d918 100644
+--- a/userspace/ksuinit/src/lib.rs
++++ b/userspace/ksuinit/src/lib.rs
+@@ -312,10 +312,63 @@ fn replace_module_vermagic(buffer: &mut Vec<u8>, required_vermagic: &str) -> Res
+     Ok(())
+ }
+ 
++#[cfg(test)]
++mod s908w_metadata_tests {
++    use super::*;
++
++    #[test]
++    fn rewriting_the_release_preserves_every_other_section() {
++        let original = include_bytes!("../tests/fixtures/samsung-5.10.ko");
++        let before = Elf::parse(original).unwrap();
++        let mut rewritten = original.to_vec();
++        let release = "5.10.236-android12-9-31998796-abS908WVLSAGZE3 SMP preempt mod_unload modversions aarch64";
++        replace_module_vermagic(&mut rewritten, release).unwrap();
++        let after = Elf::parse(&rewritten).unwrap();
++        assert_eq!(before.section_headers.len(), after.section_headers.len());
++        for (old, new) in before.section_headers.iter().zip(&after.section_headers) {
++            let name = before.shdr_strtab.get_at(old.sh_name).unwrap_or("");
++            assert_eq!(name, after.shdr_strtab.get_at(new.sh_name).unwrap_or(""));
++            if name == ".modinfo" {
++                let info = &rewritten[new.sh_offset as usize..(new.sh_offset + new.sh_size) as usize];
++                assert!(info.split(|b| *b == 0).any(|e| e == format!("vermagic={release}").as_bytes()));
++                assert!(info.split(|b| *b == 0).any(|e| e == b"name=kernelsu"));
++            } else {
++                assert_eq!(old.sh_offset, new.sh_offset, "{name}");
++                assert_eq!(old.sh_size, new.sh_size, "{name}");
++                if old.sh_type != section_header::SHT_NOBITS {
++                    let start = old.sh_offset as usize;
++                    let end = start + old.sh_size as usize;
++                    assert_eq!(&original[start..end], &rewritten[start..end], "{name}");
++                }
++            }
++        }
++    }
++
++    #[test]
++    fn malformed_module_is_rejected_without_mutating_it() {
++        let original = b"not a kernel module".to_vec();
++        let mut buffer = original.clone();
++        assert!(replace_module_vermagic(&mut buffer, "invalid").is_err());
++        assert_eq!(buffer, original);
++    }
++}
++
+ /// Relocate undefined symbols in an ELF kernel module buffer using /proc/kallsyms,
+ /// then load it via init_module syscall.
+ pub fn load_module(data: &[u8], params: &CStr) -> Result<()> {
+     let mut buffer = data.to_vec();
++    // The public Samsung module's imports and all available version CRCs
++    // were checked against this Image. Set only its release metadata here,
++    // before parsing symbol offsets, using the upstream ELF-aware rewriter.
++    let uname = rustix::system::uname();
++    anyhow::ensure!(
++        uname.release().to_bytes() == b"5.10.236-android12-9-31998796-abS908WVLSAGZE3",
++        "this experimental module loader requires S908WVLSAGZE3 exactly"
++    );
++    replace_module_vermagic(
++        &mut buffer,
++        "5.10.236-android12-9-31998796-abS908WVLSAGZE3 SMP preempt mod_unload modversions aarch64",
++    )?;
+     let elf = Elf::parse(&buffer)?;
+     let ctx = *elf.syms.ctx();
+ 

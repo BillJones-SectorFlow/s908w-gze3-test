@@ -1,0 +1,44 @@
+The two source archives contain the modified tracked source at the revisions
+in PROVENANCE.json, plus the embedded KernelSU module and module test fixture.
+Patches show the changes against those upstream revisions. Build dependencies
+and toolchains are not bundled. APK/module binaries are unchanged upstream
+v3.4.0 release files from sarabpal-dev/KernelSU-Next (android12-5.10).
+
+IonStack changes: exact model/kernel guards, shell-only run guard, Next's
+CVE43499_ROOT_HELPER path and caller UID passed to --umh, one-attempt cap,
+tracefs-compatible route guard and cached P0 offset removal.
+Build with Android NDK r27d toolchain binaries on PATH:
+  make PROJECT=S908WVLSAGZE3 preload
+Output cve-2026-43499 is the .so despite its original extensionless name.
+
+KernelSU changes: accept Next's --ephemeral option, foreground late-load,
+exact kernel guard, ELF-aware vermagic rewriting, verified daemon staging,
+manager package handling, and skip module lifecycle scripts in ephemeral mode.
+No CRC/signature bypass is added; exported symbol CRCs were checked against
+symbols extracted from the exact kernel Image. This does not establish ABI
+safety or successful runtime loading.
+
+Build with Rust stable and the aarch64-linux-android target, Android NDK r27d,
+and libclang. From the KernelSU-Next source directory set:
+  ANDROID_NDK_HOME=/path/to/android-ndk-r27d
+  CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang
+  CC_aarch64_linux_android=$CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER
+  AR_aarch64_linux_android=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+  LIBCLANG_PATH=/path/to/libclang/directory
+  S908W_RELEASE_VERSION_CODE=33303
+  BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
+Export these variables and run:
+  cargo build --locked --release --target aarch64-linux-android --manifest-path userspace/ksud/Cargo.toml
+
+Host module-rewrite checks:
+  cargo test --lib --manifest-path userspace/ksuinit/Cargo.toml
+Two tests passed: long vermagic rewrite preserves every other ELF section;
+malformed module input is refused without modification.
+
+Firmware evidence: the S908WVLSAGZE3 boot image archived at IonStack commit
+09c419b3cc3a73ab6d68aed3556cb280d29e9cc6 matches the screenshot kernel release
+and build timestamp. Regenerating target.h from its Image produced identical
+contents to the current checked-in target header. Firmware Image is not in kit.
+
+These build checks are not phone testing. No exploit/root/manager operation
+was executed on a Galaxy during preparation of this kit.
