@@ -11,9 +11,7 @@
         "5.10.236-android12-9-31998796-abS908WVLSAGZE3"
       ],
       "flavor": "kernelsu-next",
-      "routePolicy": {
-        "prefersShellTransport": true
-      },
+      "requiresShell": true,
       "exploit": {
         "url": "https://raw.githubusercontent.com/BillJones-SectorFlow/s908w-gze3-test/main/artifacts/ionstack-s908w-gze3-rmgnext-experimental.so",
         "size": 1839144,
